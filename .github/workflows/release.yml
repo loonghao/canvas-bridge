@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build-binaries:
+    needs: [release-please]
+    if: needs.release-please.outputs.release_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: canvas-bridge-linux-x86_64
+            binary: canvas-bridge
+          - os: windows-latest
+            artifact: canvas-bridge-windows-x86_64.exe
+            binary: canvas-bridge.exe
+          - os: macos-latest
+            artifact: canvas-bridge-macos-x86_64
+            binary: canvas-bridge
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - uses: loonghao/vx@v0.8.36
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ runner.os }}
+          shared-key: release-${{ runner.os }}
+      - name: Build
+        run: vx just build
+      - name: Stage binary
+        shell: bash
+        run: cp target/release/${{ matrix.binary }} ${{ matrix.artifact }}
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload ${{ needs.release-please.outputs.tag_name }} ${{ matrix.artifact }} --clobber
